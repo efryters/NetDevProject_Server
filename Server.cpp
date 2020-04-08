@@ -38,6 +38,9 @@ https://www.tutorialspoint.com/sqlite/sqlite_c_cpp.htm
 #include <stdio.h>
 #include <iostream>
 
+#include <stdlib.h>
+#include <signal.h>
+
 #include "../NetDev_Server/sqlite3.h"
 #include "../NetDev_Server/Server.h"
 
@@ -48,19 +51,22 @@ https://www.tutorialspoint.com/sqlite/sqlite_c_cpp.htm
 #define DEFAULT_BUFLEN 512
 #define DEFAULT_PORT "27015"
 #define ACK_MSG "OK\r\n"
+#define NACK_MSG "NOT OK\r\n"
 
 const char* dbFile = "C:\\xampp\\htdocs\\Project\\data.db";
+bool run = true;
+
+SOCKET ListenSocket = INVALID_SOCKET;
+SOCKET ClientSocket = INVALID_SOCKET;
 
 int __cdecl main(void)
 {
 	punchInfo_s pi;
 	ZeroMemory(&pi, sizeof(pi));
+	sqlite3* db;
 
 	WSADATA wsaData;
 	int iResult;
-
-	SOCKET ListenSocket = INVALID_SOCKET;
-	SOCKET ClientSocket = INVALID_SOCKET;
 
 	struct addrinfo* result = NULL;
 	struct addrinfo hints;
@@ -68,6 +74,8 @@ int __cdecl main(void)
 	int iSendResult;
 	char recvbuf[DEFAULT_BUFLEN];
 	int recvbuflen = DEFAULT_BUFLEN;
+
+	const char* response;
 
 	// Initialize Winsock
 	iResult = WSAStartup(MAKEWORD(2, 2), &wsaData);
@@ -82,70 +90,68 @@ int __cdecl main(void)
 	hints.ai_protocol = IPPROTO_TCP;
 	hints.ai_flags = AI_PASSIVE;
 
-	// Resolve the server address and port
-	iResult = getaddrinfo(NULL, DEFAULT_PORT, &hints, &result);
-	if (iResult != 0) {
-		printf("getaddrinfo failed with error: %d\n", iResult);
-		WSACleanup();
-		return 1;
-	}
 
-	// Create a SOCKET for connecting to server
-	ListenSocket = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
-	if (ListenSocket == INVALID_SOCKET) {
-		printf("socket failed with error: %ld\n", WSAGetLastError());
-		freeaddrinfo(result);
-		WSACleanup();
-		return 1;
-	}
-
-	// Setup the TCP listening socket
-	iResult = bind(ListenSocket, result->ai_addr, (int)result->ai_addrlen);
-	if (iResult == SOCKET_ERROR) {
-		printf("bind failed with error: %d\n", WSAGetLastError());
-		freeaddrinfo(result);
-		closesocket(ListenSocket);
-		WSACleanup();
-		return 1;
-	}
-
-	/// TODO: Get SQLite stuff sorted out
-	sqlite3* db;
-	int dbRes = sqlite3_open_v2(dbFile, &db, SQLITE_OPEN_READWRITE, NULL);
-	if (dbRes != SQLITE_OK) {
-		printf("Error opening DB.");
-		freeaddrinfo(result);
-		closesocket(ListenSocket);
-		WSACleanup();
-		return 1;
-	}
-
-	freeaddrinfo(result);
-
-	iResult = listen(ListenSocket, SOMAXCONN);
-	if (iResult == SOCKET_ERROR) {
-		printf("listen failed with error: %d\n", WSAGetLastError());
-		closesocket(ListenSocket);
-		WSACleanup();
-		return 1;
-	}
-
-	// Accept a client socket
-	ClientSocket = accept(ListenSocket, NULL, NULL);
-	if (ClientSocket == INVALID_SOCKET) {
-		printf("accept failed with error: %d\n", WSAGetLastError());
-		closesocket(ListenSocket);
-		WSACleanup();
-		return 1;
-	}
-
-	// No longer need server socket
-	closesocket(ListenSocket);
-
-	// Receive until the peer shuts down the connection
+	/// TODO: Find way to break out of loop and cleanup winsock
 	do {
+		// Resolve the server address and port
+		iResult = getaddrinfo(NULL, DEFAULT_PORT, &hints, &result);
+		if (iResult != 0) {
+			printf("getaddrinfo failed with error: %d\n", iResult);
+			WSACleanup();
+			return 1;
+		}
+
+		// Create a SOCKET for connecting to server
+		ListenSocket = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
+		if (ListenSocket == INVALID_SOCKET) {
+			printf("socket failed with error: %ld\n", WSAGetLastError());
+			freeaddrinfo(result);
+			WSACleanup();
+			return 1;
+		}
+
+		// Setup the TCP listening socket
+		iResult = bind(ListenSocket, result->ai_addr, (int)result->ai_addrlen);
+		if (iResult == SOCKET_ERROR) {
+			printf("bind failed with error: %d\n", WSAGetLastError());
+			freeaddrinfo(result);
+			closesocket(ListenSocket);
+			WSACleanup();
+			return 1;
+		}
+
+		freeaddrinfo(result);
+
+		iResult = listen(ListenSocket, SOMAXCONN);
+		if (iResult == SOCKET_ERROR) {
+			printf("listen failed with error: %d\n", WSAGetLastError());
+			closesocket(ListenSocket);
+			WSACleanup();
+			return 1;
+		}
+
+		// Accept a client socket
+		ClientSocket = accept(ListenSocket, NULL, NULL);
+		if (ClientSocket == INVALID_SOCKET) {
+			printf("accept failed with error: %d\n", WSAGetLastError());
+			closesocket(ListenSocket);
+			WSACleanup();
+			return 1;
+		}
+
+		// No longer need server socket
+		closesocket(ListenSocket);
 
 		iResult = recv(ClientSocket, recvbuf, recvbuflen, 0);
+
+		if (sqlite3_open_v2(dbFile, &db, SQLITE_OPEN_READWRITE, NULL) != SQLITE_OK) {
+			printf("Error opening DB.");
+			freeaddrinfo(result);
+			closesocket(ListenSocket);
+			WSACleanup();
+			return 1;
+		}
+
 		if (iResult > 0) {
 			*(recvbuf + iResult) = '\x00';
 			printf("Bytes received: %d\n", iResult);
@@ -153,12 +159,34 @@ int __cdecl main(void)
 			strcpy_s(localbuf, iResult, recvbuf);
 			UnpackMessage(&pi, localbuf);
 			free(localbuf);
+
 			/// TODO: Got data, now process SQL statement.
-			WritePunchToDB(db, &pi);
-			dbRes = sqlite3_close(db);
+			switch (WritePunchToDB(db, &pi))
+			{
+			case SQL_OK:
+				puts("[SERVER] Added punch to db!");
+				response = ACK_MSG;
+				break;
+
+			case SQL_INVALID_EMPLOYEE:
+				puts("[SERVER] Employee does not exist!");
+				response = NACK_MSG;
+				break;
+
+			case SQL_INVALID_PIN:
+				puts("[SERVER] Incorrect PIN!");
+				response = NACK_MSG;
+				break;
+
+			default:
+				puts("[SERVER] Undefined error!");
+				response = NACK_MSG;
+			}
+
+			sqlite3_close(db);
 
 			// Echo the buffer back to the sender
-			iSendResult = send(ClientSocket, ACK_MSG, sizeof(ACK_MSG), 0);
+			iSendResult = send(ClientSocket, response, strlen(response), 0);
 			if (iSendResult == SOCKET_ERROR) {
 				printf("send failed with error: %d\n", WSAGetLastError());
 				closesocket(ClientSocket);
@@ -168,17 +196,17 @@ int __cdecl main(void)
 			printf("Bytes sent: %d\n", iSendResult);
 
 		}
-		else if (iResult == 0)
-			printf("Connection closing...\n");
-		else {
-			printf("recv failed with error: %d\n", WSAGetLastError());
-			closesocket(ClientSocket);
-			WSACleanup();
-			return 1;
-		}
+		//else if (iResult == 0)
+		//	printf("Connection closing...\n");
+		//else {
+		//	printf("recv failed with error: %d\n", WSAGetLastError());
+		//	closesocket(ClientSocket);
+		//	WSACleanup();
+		//	return 1;
+		//}
 		/* */
 
-	} while (iResult > 0);
+	} while (1);
 
 	// shutdown the connection since we're done
 	iResult = shutdown(ClientSocket, SD_SEND);

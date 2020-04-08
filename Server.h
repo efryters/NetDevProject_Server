@@ -9,13 +9,6 @@
 #define MAX_FIELD 256
 
 /* Structs and Enums */
-typedef struct {
-	char* name;
-	char* email;
-	char* postCode;
-	char* message;
-
-} feedbackInfo;
 
 typedef struct {
 	char* employeeID;
@@ -23,7 +16,7 @@ typedef struct {
 } punchInfo_s;
 
 typedef struct {
-	const unsigned char* employeeID;
+	const char* employeePIN;
 	int employeePresent;
 } returnedEmployee_s;
 
@@ -33,16 +26,15 @@ typedef enum {
 } punchInfoFields_e;
 
 typedef enum {
-	FB_NAME,
-	FB_EMAIL,
-	FB_POSTCODE,
-	FB_MESSAGE
-} feedbackFields;
+	SQL_OK,
+	SQL_INVALID_EMPLOYEE,
+	SQL_INVALID_PIN,
+	SQL_INTERNAL_ERROR
+} SqlReturnStatus_e;
 
 /* Function Prototypes */
 void UnpackMessage(punchInfo_s* pi, char* recvBuf);
 
 /* Function Prototypes -- sqlite_api.cpp */
-void WriteFeedbackToDB(sqlite3* db, feedbackInfo* fb);
 sqlite3* OpenDatabase(const char* path);
-void WritePunchToDB(sqlite3* db, punchInfo_s* pi);
+int WritePunchToDB(sqlite3* db, punchInfo_s* pi);
